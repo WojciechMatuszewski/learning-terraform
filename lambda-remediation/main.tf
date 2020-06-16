@@ -142,3 +142,98 @@ resource "aws_cloudtrail" "lambda-remediation_cloudtrail" {
 
 
 
+# Remediation lambda role
+data aws_iam_policy_document "allow_remediation_lambda"{
+  statement {
+    effect = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      identifiers = ["lambda.amazonaws.com"]
+      type = "Service"
+    }
+  }
+}
+
+data aws_iam_policy_document "allow_sg_change" {
+  statement {
+    effect = "Allow"
+    actions = ["ec2:RevokeSecurityGroupIngress"]
+    resources = [
+      "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:security-group/${aws_security_group.lambda-remediation_sg.id}"
+    ]
+  }
+}
+
+resource "aws_iam_role" "allow_sg_change_role" {
+  assume_role_policy = data.aws_iam_policy_document.allow_remediation_lambda.json
+}
+
+resource "aws_iam_role_policy" "allow_sg_change_policy" {
+  policy = data.aws_iam_policy_document.allow_sg_change.json
+  role = aws_iam_role.allow_sg_change_role.id
+}
+
+# Remediation lambda
+data "archive_file" "remediation-lambda" {
+  output_path = "function.zip"
+  type = "zip"
+  source_file = "function.py"
+}
+
+resource "aws_lambda_function" "remediation-lambda" {
+  function_name = "remediation-lambda"
+  filename = data.archive_file.remediation-lambda.output_path
+  handler = "remediation-lambda.lambda_handler"
+  role = aws_iam_role.allow_sg_change_role.arn
+  runtime = "python2.7"
+  timeout = 60
+
+
+  environment {
+    variables = {
+      security_group_id = aws_security_group.lambda-remediation_sg.id
+    }
+  }
+}
+
+
+# Lambda permission to be invoked by cloudwatch (or maybe event brdige actually?)
+resource "aws_lambda_permission" "allow_invoking_lambda" {
+  action = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.remediation-lambda.function_name
+  principal = "events.amazonaws.com"
+}
+
+resource "aws_cloudwatch_event_target" "cloudwatch_lambda_target" {
+  arn = aws_lambda_function.remediation-lambda.arn
+  rule = aws_cloudwatch_event_rule.listen_to_sg_changes.name
+}
+
+# CloudWatch rule for lambda
+resource "aws_cloudwatch_event_rule" "listen_to_sg_changes" {
+  event_pattern = <<PATTERN
+{
+  "source": [
+    "aws.ec2"
+  ],
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "detail": {
+    "eventSource": [
+      "ec2.amazonaws.com"
+    ],
+    "eventName": [
+      "AuthorizeSecurityGroupIngress",
+      "AuthorizeSecurityGroupEgress",
+      "RevokeSecurityGroupEgress",
+      "RevokeSecurityGroupIngress",
+      "CreateSecurityGroup",
+      "DeleteSecurityGroup"
+    ]
+  }
+}
+PATTERN
+  is_enabled = true
+}
