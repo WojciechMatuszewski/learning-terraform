@@ -23,6 +23,7 @@ resource "aws_security_group" "lambda-remediation_sg" {
     from_port = 80
     protocol = "tcp"
     to_port = 80
+    cidr_blocks = ["-1"]
   }
 
   tags = {
@@ -163,6 +164,18 @@ data aws_iam_policy_document "allow_sg_change" {
       "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:security-group/${aws_security_group.lambda-remediation_sg.id}"
     ]
   }
+
+  statement {
+    effect = "Allow"
+    actions = ["logs:CreateLogGroup"]
+    resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${aws_lambda_function.remediation-lambda.function_name}:*"]
+  }
 }
 
 resource "aws_iam_role" "allow_sg_change_role" {
@@ -184,7 +197,7 @@ data "archive_file" "remediation-lambda" {
 resource "aws_lambda_function" "remediation-lambda" {
   function_name = "remediation-lambda"
   filename = data.archive_file.remediation-lambda.output_path
-  handler = "remediation-lambda.lambda_handler"
+  handler = "function.lambda_handler"
   role = aws_iam_role.allow_sg_change_role.arn
   runtime = "python2.7"
   timeout = 60
